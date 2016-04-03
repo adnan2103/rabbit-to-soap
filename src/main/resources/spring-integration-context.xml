@@ -1,0 +1,96 @@
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:int="http://www.springframework.org/schema/integration"
+       xmlns:int-amqp="http://www.springframework.org/schema/integration/amqp"
+       xmlns:rabbit="http://www.springframework.org/schema/rabbit"
+       xmlns:ws="http://www.springframework.org/schema/integration/ws"
+       xmlns:util="http://www.springframework.org/schema/util"
+       xsi:schemaLocation="http://www.springframework.org/schema/integration/amqp http://www.springframework.org/schema/integration/amqp/spring-integration-amqp.xsd
+http://www.springframework.org/schema/integration http://www.springframework.org/schema/integration/spring-integration.xsd
+http://www.springframework.org/schema/rabbit http://www.springframework.org/schema/rabbit/spring-rabbit.xsd
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+http://www.springframework.org/schema/integration/ws http://www.springframework.org/schema/integration/ws/spring-integration-ws-4.1.xsd http://www.springframework.org/schema/util http://www.springframework.org/schema/util/spring-util.xsd">
+
+
+
+
+
+    <int:publish-subscribe-channel id="consume-country-code-channel" />
+    <int-amqp:inbound-channel-adapter
+            channel="consume-country-code-channel"
+            queue-names="country.code.channel"
+            concurrent-consumers="5"
+            connection-factory="rabbitConnectionFactory"
+            mapped-request-headers="*" />
+    <rabbit:connection-factory
+            id="rabbitConnectionFactory"
+            connection-factory="rcf"
+            host="${spring.rabbitmq.host}"
+            port="${spring.rabbitmq.port}"
+            username="${spring.rabbitmq.username}"
+            password="${spring.rabbitmq.password}"
+            />
+    <bean id="rcf" class="com.rabbitmq.client.ConnectionFactory">
+        <property name="host" value="${spring.rabbitmq.host}"/>
+        <property name="requestedHeartbeat" value="10" />
+    </bean>
+
+
+
+    <int:channel id="consume-counrty-request-xml-channel"/>
+    <int:channel id="country-soap-response-channel"/>
+    <int:channel id="to-hystrix"/>
+
+
+    <int:chain input-channel="consume-country-code-channel"
+               output-channel="consume-counrty-request-xml-channel">
+        <int:json-to-object-transformer type="com.rabbit.post.gateway.Country"/>
+    </int:chain>
+
+
+    <bean id="customMessageFactory" class="com.rabbit.post.soap.CustomMessageFactory" />
+
+    <bean id="messageFactory" class="org.springframework.ws.soap.saaj.SaajSoapMessageFactory">
+        <property name="soapVersion">
+            <util:constant static-field="org.springframework.ws.soap.SoapVersion.SOAP_11"/>
+        </property>
+        <property name="messageFactory" ref="customMessageFactory" />
+    </bean>
+
+
+    <bean name="messageSender" class="org.springframework.ws.transport.http.HttpComponentsMessageSender">
+        <property name="credentials">
+            <bean class="org.apache.http.auth.UsernamePasswordCredentials">
+                <constructor-arg value="user"/>
+                <constructor-arg value="password"/>
+            </bean>
+        </property>
+    </bean>
+
+    <int:chain input-channel="country-soap-request-channel" output-channel="country-soap-response-channel">
+        <ws:header-enricher>
+            <ws:soap-action value="getCountryRequest"/>
+        </ws:header-enricher>
+        <ws:outbound-gateway uri="http://localhost:8091/ws" message-sender="messageSender" message-factory="messageFactory">
+        </ws:outbound-gateway>
+    </int:chain>
+
+    <bean id="channelResolver" class="org.springframework.integration.support.channel.BeanFactoryChannelResolver" />
+
+
+    <int:channel id="request-json-channel"/>
+    <int:channel id="request-post-channel"/>
+
+    <int:object-to-json-transformer
+            input-channel="request-json-channel"
+            output-channel="request-post-channel"
+            content-type="text/plain"/>
+
+    <rabbit:queue name="country.code.channel" durable="true"/>
+    <int-amqp:outbound-channel-adapter
+            id="redFlagChannelAdapter"
+            channel="request-post-channel"
+            amqp-template="rabbitTemplate"
+            routing-key="country.code.channel"/>
+
+</beans>
